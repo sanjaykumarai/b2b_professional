@@ -18,6 +18,8 @@ interface AuthContextType {
   switchRole: (role: UserRole) => void;
   logout: () => void;
   refreshUsersAndBusinesses: () => Promise<void>;
+  removeUser: (userId: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  addUser: (payload: Partial<User>) => Promise<User>;
   isLoading: boolean;
 }
 
@@ -189,6 +191,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const removeUser = async (userId: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+      setIsLoading(true);
+      const res = await api.deleteUser(userId);
+      setAllUsers((prev) => prev.filter((u) => u.id !== userId));
+
+      // If current user is the one that got deleted, switch to default or logout
+      if (currentUser?.id === userId) {
+        const remainingUsers = allUsers.filter((u) => u.id !== userId);
+        if (remainingUsers.length > 0) {
+          const fallback = remainingUsers.find((u) => u.businessId === currentBusiness?.id) || remainingUsers[0];
+          setCurrentUser(fallback);
+          localStorage.setItem(AUTH_STORAGE_KEY, fallback.id);
+        } else {
+          logout();
+        }
+      }
+      await refreshUsersAndBusinesses();
+      return { success: true, message: res.message || 'User removed successfully' };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to remove user' };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const addUser = async (payload: Partial<User>): Promise<User> => {
+    try {
+      setIsLoading(true);
+      const created = await api.createUser(payload);
+      setAllUsers((prev) => [...prev, created]);
+      await refreshUsersAndBusinesses();
+      return created;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -207,6 +247,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         switchRole,
         logout,
         refreshUsersAndBusinesses,
+        removeUser,
+        addUser,
         isLoading,
       }}
     >

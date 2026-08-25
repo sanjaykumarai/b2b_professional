@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useWorkflow } from '../../context/WorkflowContext';
 import { StatusBadge, PriorityBadge } from '../common/Badge';
+import { SlaBadge } from '../sla/SlaBadge';
+import { SlaAnalyticsDashboard } from '../sla/SlaAnalyticsDashboard';
 import { RequestDetailsModal } from '../requests/RequestDetailsModal';
 import {
   Inbox,
@@ -10,6 +12,7 @@ import {
   BookOpen,
   Search,
   Sparkles,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface StaffViewProps {
@@ -17,9 +20,10 @@ interface StaffViewProps {
 }
 
 export const StaffView: React.FC<StaffViewProps> = ({ currentTab }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, currentBusiness, allUsers } = useAuth();
   const {
     requests,
+    workflows,
     documents,
     updateRequestStatus,
     selectedRequest,
@@ -149,6 +153,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ currentTab }) => {
                     <span className="font-mono text-xs text-indigo-400 light:text-indigo-600 font-semibold">{req.id}</span>
                     <StatusBadge status={req.status} size="sm" />
                     <PriorityBadge priority={req.priority} />
+                    <SlaBadge status={req.slaInfo?.status} size="sm" />
                     <span className="text-[11px] text-slate-400 light:text-slate-600 font-medium uppercase tracking-wider">{req.serviceName}</span>
                   </div>
 
@@ -223,6 +228,18 @@ export const StaffView: React.FC<StaffViewProps> = ({ currentTab }) => {
             )}
           </div>
         </div>
+      )}
+
+      {/* TAB: SLA QUEUE & ANALYTICS */}
+      {currentTab === 'staff_sla' && currentBusiness && (
+        <SlaAnalyticsDashboard
+          business={currentBusiness}
+          requests={requests}
+          workflows={workflows}
+          users={allUsers}
+          isOwner={false}
+          onSelectRequest={setSelectedRequest}
+        />
       )}
 
       {/* TAB 2: KNOWLEDGE BASE */}

@@ -1,9 +1,14 @@
-import React, { useState } from 'react';
-import { CustomerRequest } from '../../types';
+import React, { useState, useEffect } from 'react';
+import { CustomerRequest, SlaEvent, RequestSlaInfo, SlaBreachPrediction } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useWorkflow } from '../../context/WorkflowContext';
 import { StatusBadge, PriorityBadge, RoleBadge } from '../common/Badge';
 import { pdfReports } from '../../services/pdfGenerator';
+import { SlaBadge } from '../sla/SlaBadge';
+import { SlaCountdownTimer } from '../sla/SlaCountdownTimer';
+import { SlaPredictionCard } from '../sla/SlaPredictionCard';
+import { SlaEventTimeline } from '../sla/SlaEventTimeline';
+import { api } from '../../services/api';
 import {
   X,
   ShieldCheck,
@@ -14,6 +19,8 @@ import {
   Layers,
   Activity,
   Check,
+  Clock,
+  BrainCircuit,
 } from 'lucide-react';
 
 interface RequestDetailsModalProps {
@@ -30,12 +37,28 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
     uploadDeliverableFile,
   } = useWorkflow();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'timeline' | 'deliverables'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'sla' | 'timeline' | 'deliverables'>('overview');
   const [statusNotes, setStatusNotes] = useState('');
   const [selectedStaffId, setSelectedStaffId] = useState(request.assignedStaffId || '');
   const [isUpdating, setIsUpdating] = useState(false);
   const [uploadFileName, setUploadFileName] = useState('');
   const [isDeliverable] = useState(true);
+
+  // SLA state
+  const [slaEvents, setSlaEvents] = useState<SlaEvent[]>([]);
+  const [currentRequest, setCurrentRequest] = useState<CustomerRequest>(request);
+
+  useEffect(() => {
+    setCurrentRequest(request);
+    // Fetch live SLA events and prediction
+    api.getRequestSla(request.id)
+      .then((slaData) => {
+        if (slaData && slaData.events) {
+          setSlaEvents(slaData.events);
+        }
+      })
+      .catch(() => {});
+  }, [request.id]);
 
   const requestActivities = activities.filter((a) => a.requestId === request.id);
   const staffMembers = allUsers.filter(
@@ -45,12 +68,13 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
   const handleStatusChange = async (newStatus: string) => {
     setIsUpdating(true);
     try {
-      await updateRequestStatus(
+      const updated = await updateRequestStatus(
         request.id,
         newStatus,
         statusNotes || `Transitioned status to ${newStatus}`,
         statusNotes
       );
+      if (updated) setCurrentRequest(updated);
       setStatusNotes('');
     } finally {
       setIsUpdating(false);
@@ -63,7 +87,8 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
     if (!staff) return;
     setIsUpdating(true);
     try {
-      await assignStaffToRequest(request.id, staff.id, staff.name);
+      const updated = await assignStaffToRequest(request.id, staff.id, staff.name);
+      if (updated) setCurrentRequest(updated);
     } finally {
       setIsUpdating(false);
     }
@@ -83,7 +108,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
 
   const handleDownloadDossier = () => {
     if (!currentBusiness) return;
-    pdfReports.generateRequestDossier(currentBusiness, request, requestActivities);
+    pdfReports.generateRequestDossier(currentBusiness, currentRequest, requestActivities);
   };
 
   return (
@@ -92,17 +117,23 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
         {/* Top Header */}
         <div className="px-6 py-4 border-b border-white/[0.08] light:border-slate-200 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-transparent flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-xs text-indigo-400 light:text-indigo-600 font-bold tracking-wider">
-                {request.id}
+                {currentRequest.id}
               </span>
-              <StatusBadge status={request.status} />
-              <PriorityBadge priority={request.priority} />
+              <StatusBadge status={currentRequest.status} />
+              <PriorityBadge priority={currentRequest.priority} />
+              <SlaBadge
+                status={currentRequest.slaInfo?.status}
+                remainingMinutes={currentRequest.slaInfo?.remainingMinutes}
+                isPaused={currentRequest.slaInfo?.isPaused}
+                breachPrediction={currentRequest.slaPrediction}
+              />
             </div>
-            <h3 className="text-lg font-serif italic font-semibold text-slate-100 light:text-slate-900 mt-1">{request.title}</h3>
+            <h3 className="text-lg font-serif italic font-semibold text-slate-100 light:text-slate-900 mt-1">{currentRequest.title}</h3>
             <div className="text-xs text-slate-400 light:text-slate-600 mt-0.5">
-              Service: <span className="text-slate-200 light:text-slate-800 font-medium">{request.serviceName}</span> • Client:{' '}
-              <span className="text-slate-200 light:text-slate-800 font-medium">{request.customerName}</span>
+              Service: <span className="text-slate-200 light:text-slate-800 font-medium">{currentRequest.serviceName}</span> • Client:{' '}
+              <span className="text-slate-200 light:text-slate-800 font-medium">{currentRequest.customerName}</span>
             </div>
           </div>
 
@@ -125,7 +156,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
         </div>
 
         {/* Tab Navigation */}
-        <div className="px-6 py-2.5 border-b border-white/[0.06] light:border-slate-200 bg-black/20 light:bg-slate-50 flex items-center gap-2 text-xs">
+        <div className="px-6 py-2.5 border-b border-white/[0.06] light:border-slate-200 bg-black/20 light:bg-slate-50 flex flex-wrap items-center gap-2 text-xs">
           <button
             onClick={() => setActiveTab('overview')}
             className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 text-xs font-semibold uppercase font-mono tracking-wider ${
@@ -136,6 +167,17 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
           >
             <Layers className="w-3.5 h-3.5" />
             <span>Specifications</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('sla')}
+            className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 text-xs font-semibold uppercase font-mono tracking-wider ${
+              activeTab === 'sla'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] light:text-slate-600 light:hover:text-slate-900'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>SLA & ML Prediction</span>
           </button>
           <button
             onClick={() => setActiveTab('timeline')}
@@ -157,7 +199,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
-            <span>Deliverables ({request.documents?.length || 0})</span>
+            <span>Deliverables ({currentRequest.documents?.length || 0})</span>
           </button>
         </div>
 
@@ -171,7 +213,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                 <span>Lifecycle Operations ({currentRole} View)</span>
               </div>
               <div className="text-[11px] text-slate-400 light:text-slate-600">
-                Assigned: <span className="text-slate-200 light:text-slate-800 font-medium">{request.assignedStaffName || 'Unassigned'}</span>
+                Assigned: <span className="text-slate-200 light:text-slate-800 font-medium">{currentRequest.assignedStaffName || 'Unassigned'}</span>
               </div>
             </div>
 
@@ -180,7 +222,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
               {/* STAFF ACTIONS */}
               {currentRole === 'STAFF' && (
                 <>
-                  {request.status === 'SUBMITTED' && (
+                  {currentRequest.status === 'SUBMITTED' && (
                     <button
                       onClick={() => handleStatusChange('IN_REVIEW')}
                       disabled={isUpdating}
@@ -191,7 +233,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                     </button>
                   )}
 
-                  {(request.status === 'IN_REVIEW' || request.status === 'ASSIGNED') && (
+                  {(currentRequest.status === 'IN_REVIEW' || currentRequest.status === 'ASSIGNED') && (
                     <button
                       onClick={() => handleStatusChange('IN_PROGRESS')}
                       disabled={isUpdating}
@@ -202,7 +244,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                     </button>
                   )}
 
-                  {request.status === 'IN_PROGRESS' && (
+                  {currentRequest.status === 'IN_PROGRESS' && (
                     <button
                       onClick={() => handleStatusChange('APPROVAL')}
                       disabled={isUpdating}
@@ -226,7 +268,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
               {/* OWNER ACTIONS */}
               {currentRole === 'OWNER' && (
                 <>
-                  {request.status === 'APPROVAL' && (
+                  {currentRequest.status === 'APPROVAL' && (
                     <button
                       onClick={() => handleStatusChange('COMPLETED')}
                       disabled={isUpdating}
@@ -237,7 +279,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                     </button>
                   )}
 
-                  {request.status !== 'COMPLETED' && (
+                  {currentRequest.status !== 'COMPLETED' && (
                     <button
                       onClick={() => handleStatusChange('COMPLETED')}
                       disabled={isUpdating}
@@ -260,7 +302,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
               {/* CUSTOMER ACTIONS */}
               {currentRole === 'CUSTOMER' && (
                 <div className="text-xs text-slate-400 light:text-slate-600">
-                  {request.status === 'COMPLETED'
+                  {currentRequest.status === 'COMPLETED'
                     ? 'Your request is fulfilled and signed off. Official assets are available below.'
                     : 'Staff is currently processing your request in accordance with SLA benchmarks.'}
                 </div>
@@ -297,22 +339,31 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
           {/* TAB 1: OVERVIEW & SPECS */}
           {activeTab === 'overview' && (
             <div className="space-y-4">
+              {/* SLA Live Timer Widget inline on Overview */}
+              <SlaCountdownTimer
+                request={currentRequest}
+                canManagePause={currentRole === 'OWNER' || currentRole === 'STAFF'}
+                onSlaUpdated={(updatedSla) => {
+                  setCurrentRequest((prev) => ({ ...prev, slaInfo: updatedSla }));
+                }}
+              />
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                 <div className="p-3.5 rounded-2xl border backdrop-blur-md bg-white/[0.03] border-white/[0.08] light:bg-slate-50 light:border-slate-200">
                   <div className="text-slate-400 light:text-slate-500 text-[10px] font-mono uppercase tracking-widest">Submitted By</div>
-                  <div className="font-medium text-slate-100 light:text-slate-900 mt-1">{request.customerName}</div>
-                  <div className="text-[11px] text-slate-400 light:text-slate-600 truncate font-mono">{request.customerEmail}</div>
+                  <div className="font-medium text-slate-100 light:text-slate-900 mt-1">{currentRequest.customerName}</div>
+                  <div className="text-[11px] text-slate-400 light:text-slate-600 truncate font-mono">{currentRequest.customerEmail}</div>
                 </div>
 
                 <div className="p-3.5 rounded-2xl border backdrop-blur-md bg-white/[0.03] border-white/[0.08] light:bg-slate-50 light:border-slate-200">
                   <div className="text-slate-400 light:text-slate-500 text-[10px] font-mono uppercase tracking-widest">Target Launch Date</div>
-                  <div className="font-medium text-slate-100 light:text-slate-900 mt-1">{request.dueDate || 'Standard SLA (3-5d)'}</div>
-                  <div className="text-[11px] text-slate-400 light:text-slate-600 font-mono">Created: {new Date(request.createdAt).toLocaleDateString()}</div>
+                  <div className="font-medium text-slate-100 light:text-slate-900 mt-1">{currentRequest.dueDate || 'Standard SLA (3-5d)'}</div>
+                  <div className="text-[11px] text-slate-400 light:text-slate-600 font-mono">Created: {new Date(currentRequest.createdAt).toLocaleDateString()}</div>
                 </div>
 
                 <div className="p-3.5 rounded-2xl border backdrop-blur-md bg-white/[0.03] border-white/[0.08] light:bg-slate-50 light:border-slate-200">
                   <div className="text-slate-400 light:text-slate-500 text-[10px] font-mono uppercase tracking-widest">Approval State</div>
-                  <div className="font-medium text-slate-100 light:text-slate-900 mt-1">{request.approvalStatus || 'PENDING'}</div>
+                  <div className="font-medium text-slate-100 light:text-slate-900 mt-1">{currentRequest.approvalStatus || 'PENDING'}</div>
                   <div className="text-[11px] text-slate-400 light:text-slate-600">Owner Signoff Required: Yes</div>
                 </div>
               </div>
@@ -323,7 +374,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                   Client Ingestion Specifications
                 </h4>
                 <div className="p-4 rounded-2xl border backdrop-blur-md bg-white/[0.03] border-white/[0.08] light:bg-white light:border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  {Object.entries(request.customData || {}).map(([key, val]) => (
+                  {Object.entries(currentRequest.customData || {}).map(([key, val]) => (
                     <div key={key} className="p-2.5 rounded-xl bg-white/[0.04] border border-white/[0.08] light:bg-slate-50 light:border-slate-200">
                       <div className="text-[9px] font-bold font-mono text-slate-400 light:text-slate-500 uppercase tracking-widest">
                         {key.replace(/_/g, ' ')}
@@ -334,28 +385,65 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                     </div>
                   ))}
 
-                  {Object.keys(request.customData || {}).length === 0 && (
+                  {Object.keys(currentRequest.customData || {}).length === 0 && (
                     <div className="text-slate-400 light:text-slate-600 text-xs col-span-2">
-                      {request.description || 'No additional custom fields.'}
+                      {currentRequest.description || 'No additional custom fields.'}
                     </div>
                   )}
                 </div>
               </div>
 
               {/* Deliverable Summary if present */}
-              {request.deliverableSummary && (
+              {currentRequest.deliverableSummary && (
                 <div className="p-4 rounded-2xl border backdrop-blur-md bg-indigo-500/10 border-indigo-500/30 light:bg-indigo-50 light:border-indigo-200 text-xs">
                   <div className="font-bold text-slate-100 light:text-slate-900 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                     <span>Deliverable Status Note</span>
                   </div>
-                  <p className="text-slate-300 light:text-slate-700 mt-1.5 leading-relaxed">{request.deliverableSummary}</p>
+                  <p className="text-slate-300 light:text-slate-700 mt-1.5 leading-relaxed">{currentRequest.deliverableSummary}</p>
                 </div>
               )}
             </div>
           )}
 
-          {/* TAB 2: AUDIT TIMELINE */}
+          {/* TAB 2: DEDICATED SLA & ML PREDICTION */}
+          {activeTab === 'sla' && (
+            <div className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <SlaCountdownTimer
+                  request={currentRequest}
+                  canManagePause={currentRole === 'OWNER' || currentRole === 'STAFF'}
+                  onSlaUpdated={(updatedSla) => {
+                    setCurrentRequest((prev) => ({ ...prev, slaInfo: updatedSla }));
+                  }}
+                />
+
+                <SlaPredictionCard
+                  request={currentRequest}
+                  onPredictionUpdated={(pred) => {
+                    setCurrentRequest((prev) => ({ ...prev, slaPrediction: pred }));
+                  }}
+                />
+              </div>
+
+              {/* SLA Events History */}
+              <div className="p-4 rounded-2xl border backdrop-blur-md bg-white/[0.03] border-white/[0.08] light:bg-white light:border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-slate-100 light:text-slate-900 font-mono uppercase tracking-wider flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-indigo-400" />
+                    <span>SLA Lifecycle & Audit Event History</span>
+                  </h4>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {slaEvents.length} Events Logged
+                  </span>
+                </div>
+
+                <SlaEventTimeline events={slaEvents} />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: AUDIT TIMELINE */}
           {activeTab === 'timeline' && (
             <div className="space-y-3">
               <h4 className="text-[10px] font-mono font-bold text-slate-400 light:text-slate-600 uppercase tracking-widest">
@@ -393,7 +481,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
             </div>
           )}
 
-          {/* TAB 3: DELIVERABLES & DOCUMENTS */}
+          {/* TAB 4: DELIVERABLES & DOCUMENTS */}
           {activeTab === 'deliverables' && (
             <div className="space-y-4">
               {/* Upload Deliverable (Staff / Owner) */}
@@ -424,7 +512,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
 
               {/* Documents List */}
               <div className="space-y-2">
-                {request.documents?.map((doc) => (
+                {currentRequest.documents?.map((doc) => (
                   <div
                     key={doc.id}
                     className="p-3.5 rounded-2xl border backdrop-blur-md bg-white/[0.03] border-white/[0.08] light:bg-white light:border-slate-200 flex items-center justify-between gap-3 text-xs"
@@ -457,7 +545,7 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                   </div>
                 ))}
 
-                {(!request.documents || request.documents.length === 0) && (
+                {(!currentRequest.documents || currentRequest.documents.length === 0) && (
                   <div className="text-center py-8 text-xs text-slate-400 light:text-slate-500">
                     No files or deliverables uploaded for this request yet.
                   </div>
@@ -483,3 +571,4 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
     </div>
   );
 };
+

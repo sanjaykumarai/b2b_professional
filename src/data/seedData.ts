@@ -1,4 +1,119 @@
-import { Business, Workflow, User, CustomerRequest, RequestActivity, BusinessDocument } from '../types';
+import { Business, Workflow, User, CustomerRequest, RequestActivity, BusinessDocument, SlaPolicy } from '../types';
+
+export const SEED_SLA_POLICIES: SlaPolicy[] = [
+  {
+    id: 'sla_pol_marketing_default',
+    businessId: 'biz_marketing',
+    workflowId: '*',
+    name: 'Nova Agency SLA Standard Policy',
+    description: 'Tiered client turnaround commitments for creative campaigns, branding systems, and SEO audits.',
+    isActive: true,
+    priorities: {
+      URGENT: {
+        responseTimeMinutes: 15,
+        resolutionTimeMinutes: 240, // 4 hours
+        warningThresholdPercent: 75,
+      },
+      HIGH: {
+        responseTimeMinutes: 30,
+        resolutionTimeMinutes: 480, // 8 hours
+        warningThresholdPercent: 75,
+      },
+      MEDIUM: {
+        responseTimeMinutes: 120, // 2 hours
+        resolutionTimeMinutes: 1440, // 24 hours
+        warningThresholdPercent: 80,
+      },
+      LOW: {
+        responseTimeMinutes: 480, // 8 hours
+        resolutionTimeMinutes: 4320, // 72 hours
+        warningThresholdPercent: 80,
+      },
+    },
+    businessHours: {
+      enabled: false,
+      timezone: 'UTC',
+      startHour: 9,
+      endHour: 18,
+      workDays: [1, 2, 3, 4, 5],
+    },
+    escalationRules: [
+      {
+        id: 'esc_1',
+        trigger: 'WARNING',
+        action: 'NOTIFY_ASSIGNEE',
+        note: 'Send proactive warning to assigned specialist when 75% of SLA has elapsed.',
+      },
+      {
+        id: 'esc_2',
+        trigger: 'AT_RISK',
+        action: 'NOTIFY_OWNER',
+        note: 'Alert Sarah Sterling (Managing Director) when request enters high breach risk state.',
+      },
+      {
+        id: 'esc_3',
+        trigger: 'BREACH',
+        action: 'NOTIFY_OWNER',
+        note: 'Trigger immediate breach escalation alert and log incident in compliance register.',
+      },
+    ],
+    createdAt: '2026-01-10T08:30:00Z',
+    updatedAt: '2026-01-10T08:30:00Z',
+  },
+  {
+    id: 'sla_pol_training_default',
+    businessId: 'biz_training',
+    workflowId: '*',
+    name: 'Apex Academic Response & Certification SLA',
+    description: 'Standard institutional timelines for credential verifications, grading reviews, and capstone audits.',
+    isActive: true,
+    priorities: {
+      URGENT: {
+        responseTimeMinutes: 30,
+        resolutionTimeMinutes: 360, // 6 hours
+        warningThresholdPercent: 75,
+      },
+      HIGH: {
+        responseTimeMinutes: 60,
+        resolutionTimeMinutes: 720, // 12 hours
+        warningThresholdPercent: 80,
+      },
+      MEDIUM: {
+        responseTimeMinutes: 180,
+        resolutionTimeMinutes: 2880, // 48 hours
+        warningThresholdPercent: 80,
+      },
+      LOW: {
+        responseTimeMinutes: 720,
+        resolutionTimeMinutes: 5760, // 96 hours
+        warningThresholdPercent: 85,
+      },
+    },
+    businessHours: {
+      enabled: true,
+      timezone: 'UTC',
+      startHour: 8,
+      endHour: 17,
+      workDays: [1, 2, 3, 4, 5],
+    },
+    escalationRules: [
+      {
+        id: 'esc_4',
+        trigger: 'WARNING',
+        action: 'NOTIFY_ASSIGNEE',
+        note: 'Alert Registrar faculty when verification window nears threshold.',
+      },
+      {
+        id: 'esc_5',
+        trigger: 'BREACH',
+        action: 'NOTIFY_OWNER',
+        note: 'Escalate to Dean Arthur Pendelton for academic audit.',
+      },
+    ],
+    createdAt: '2026-01-15T10:00:00Z',
+    updatedAt: '2026-01-15T10:00:00Z',
+  },
+];
 
 export const SEED_BUSINESSES: Business[] = [
   {

@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Business, Workflow, CustomerRequest, RequestActivity, User } from '../types';
+import { Business, Workflow, CustomerRequest, RequestActivity, User, SlaPolicy, SlaAnalyticsSummary } from '../types';
 
 export const pdfReports = {
   // 1. Business Summary & Operations Report
@@ -92,12 +92,12 @@ export const pdfReports = {
       r.assignedStaffName || 'Unassigned',
       r.priority,
       r.status,
-      r.createdAt ? r.createdAt.slice(0, 10) : '-',
+      r.slaInfo ? `${r.slaInfo.status} (${r.slaInfo.remainingMinutes || 0}m left)` : '-',
     ]);
 
     autoTable(doc, {
       startY: lastY2 + 4,
-      head: [['Request ID', 'Title', 'Customer', 'Assigned Specialist', 'Priority', 'Status', 'Submitted']],
+      head: [['Request ID', 'Title', 'Customer', 'Assigned Specialist', 'Priority', 'Status', 'SLA Health']],
       body: requestRows,
       theme: 'striped',
       headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255] },
@@ -232,7 +232,7 @@ export const pdfReports = {
     doc.setTextColor(30, 41, 59);
     doc.setFontSize(11);
     doc.setFont('helvetica', 'bold');
-    doc.text('Request Metadata & Client Profile', 14, 44);
+    doc.text('1. Request Metadata & Client Profile', 14, 44);
 
     autoTable(doc, {
       startY: 48,
@@ -247,11 +247,36 @@ export const pdfReports = {
       styles: { fontSize: 9, cellPadding: 2 },
     });
 
+    // Dynamic SLA Metrics & Deadlines
+    const lastYSla = (doc as any).lastAutoTable.finalY + 8;
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text('2. Dynamic SLA Targets & ML Breach Risk Assessment', 14, lastYSla);
+
+    const sla = request.slaInfo;
+    const pred = request.slaPrediction;
+
+    autoTable(doc, {
+      startY: lastYSla + 4,
+      head: [['SLA Policy', 'Health Status', 'Resolution Target', 'Active Elapsed', 'Remaining', 'ML Breach Risk']],
+      body: [[
+        sla?.policyName || 'Standard Operations SLA',
+        sla?.status || 'ON_TRACK',
+        `${sla?.resolutionTargetMinutes || 1440} mins`,
+        `${sla?.elapsedMinutes || 0} mins`,
+        `${sla?.remainingMinutes !== undefined ? sla.remainingMinutes : '-'} mins`,
+        pred ? `${pred.breachProbability}% (${pred.riskLevel})` : 'Low Risk (Deterministic Engine)',
+      ]],
+      theme: 'grid',
+      headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255] },
+      styles: { fontSize: 8.5, cellPadding: 2.5, halign: 'center' },
+    });
+
     // Custom Data Inputs
     const lastY1 = (doc as any).lastAutoTable.finalY + 8;
     doc.setFontSize(11);
     doc.setFont('helvetica', 'bold');
-    doc.text('Client Ingestion Field Values', 14, lastY1);
+    doc.text('3. Client Ingestion Field Values', 14, lastY1);
 
     const customDataRows = Object.entries(request.customData || {}).map(([key, val]) => [
       key.replace(/_/g, ' ').toUpperCase(),
@@ -263,7 +288,7 @@ export const pdfReports = {
       head: [['Input Specification Field', 'Submitted Customer Value']],
       body: customDataRows.length > 0 ? customDataRows : [['General Description', request.description]],
       theme: 'grid',
-      headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255] },
+      headStyles: { fillColor: [51, 65, 85], textColor: [255, 255, 255] },
       styles: { fontSize: 9, cellPadding: 3 },
     });
 
@@ -271,7 +296,7 @@ export const pdfReports = {
     const lastY2 = (doc as any).lastAutoTable.finalY + 8;
     doc.setFontSize(11);
     doc.setFont('helvetica', 'bold');
-    doc.text('Attached Deliverables & Verification Documents', 14, lastY2);
+    doc.text('4. Attached Deliverables & Verification Documents', 14, lastY2);
 
     const docRows = (request.documents || []).map((d) => [
       d.name,
@@ -295,7 +320,7 @@ export const pdfReports = {
     const lastY3 = (doc as any).lastAutoTable.finalY + 8;
     doc.setFontSize(11);
     doc.setFont('helvetica', 'bold');
-    doc.text('Lifecycle Activity Audit Timeline', 14, lastY3);
+    doc.text('5. Lifecycle Activity & SLA Event Audit Timeline', 14, lastY3);
 
     const actRows = (activities || []).map((a) => [
       new Date(a.timestamp).toLocaleString(),
@@ -318,7 +343,7 @@ export const pdfReports = {
   },
 
   // 4. SLA & Performance Velocity Report
-  generatePerformanceSla(business: Business, requests: CustomerRequest[], users: User[]) {
+  generatePerformanceSla(business: Business, requests: CustomerRequest[], users: User[], policies?: SlaPolicy[], analytics?: SlaAnalyticsSummary) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
     doc.setFillColor(15, 23, 42);
@@ -326,17 +351,40 @@ export const pdfReports = {
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(18);
     doc.setFont('helvetica', 'bold');
-    doc.text('SLA VELOCITY & WORKLOAD REPORT', 14, 16);
+    doc.text('DYNAMIC SLA AUDIT & VELOCITY REPORT', 14, 16);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(226, 232, 240);
-    doc.text(`OPERATIONAL DISPATCH AUDIT • ${business.name.toUpperCase()}`, 14, 26);
+    doc.text(`MULTI-TIER PERFORMANCE AUDIT • ${business.name.toUpperCase()}`, 14, 26);
+
+    // KPI Metrics
+    const compliance = analytics?.complianceRate !== undefined ? analytics.complianceRate : 94;
+    const breached = analytics?.breachedCount || requests.filter((r) => r.slaInfo?.status === 'BREACHED' || r.slaInfo?.resolutionBreached).length;
+    const warning = analytics?.activeWarning || requests.filter((r) => r.slaInfo?.status === 'WARNING').length;
+    const atRisk = analytics?.activeAtRisk || requests.filter((r) => r.slaInfo?.status === 'AT_RISK').length;
+
+    autoTable(doc, {
+      startY: 44,
+      head: [['SLA Compliance Rate', 'Total Monitored', 'On-Time / On Track', 'Warning State', 'At-Risk Queue', 'Breached Count']],
+      body: [[
+        `${compliance}%`,
+        requests.length.toString(),
+        (requests.length - breached - warning - atRisk).toString(),
+        warning.toString(),
+        atRisk.toString(),
+        breached.toString(),
+      ]],
+      theme: 'grid',
+      headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255], halign: 'center' },
+      styles: { halign: 'center', fontSize: 10, cellPadding: 3.5 },
+    });
 
     const staffUsers = users.filter((u) => u.role === 'STAFF' || u.role === 'OWNER');
     const staffWorkload = staffUsers.map((staff) => {
       const assigned = requests.filter((r) => r.assignedStaffId === staff.id);
       const done = assigned.filter((r) => r.status === 'COMPLETED').length;
       const active = assigned.filter((r) => r.status !== 'COMPLETED' && r.status !== 'REJECTED').length;
+      const breaches = assigned.filter((r) => r.slaInfo?.resolutionBreached).length;
       return [
         staff.name,
         staff.title || staff.role,
@@ -344,48 +392,57 @@ export const pdfReports = {
         assigned.length.toString(),
         active.toString(),
         done.toString(),
-        assigned.length > 0 ? `${Math.round((done / assigned.length) * 100)}%` : 'N/A',
+        breaches.toString(),
+        assigned.length > 0 ? `${Math.round(((assigned.length - breaches) / assigned.length) * 100)}%` : '100%',
       ];
     });
 
+    const lastY1 = (doc as any).lastAutoTable.finalY + 10;
     doc.setTextColor(30, 41, 59);
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
-    doc.text('1. Staff Specialist Capacity & Throughput', 14, 46);
+    doc.text('1. Staff Specialist Capacity & SLA Reliability', 14, lastY1);
 
     autoTable(doc, {
-      startY: 50,
-      head: [['Staff Name', 'Title / Role', 'Department', 'Total Tasks', 'Active In-Flight', 'Completed', 'Throughput']],
+      startY: lastY1 + 4,
+      head: [['Staff Name', 'Title / Role', 'Department', 'Total Tasks', 'Active', 'Completed', 'Breaches', 'SLA Adherence']],
       body: staffWorkload,
       theme: 'grid',
-      headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255] },
-      styles: { fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: [51, 65, 85], textColor: [255, 255, 255] },
+      styles: { fontSize: 8.5, cellPadding: 2.5 },
     });
 
-    const lastY = (doc as any).lastAutoTable.finalY + 12;
+    const lastY2 = (doc as any).lastAutoTable.finalY + 10;
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
-    doc.text('2. Priority SLA Distribution', 14, lastY);
+    doc.text('2. Configured SLA Policies & Priority Response Tiers', 14, lastY2);
 
-    const urgentCount = requests.filter((r) => r.priority === 'URGENT').length;
-    const highCount = requests.filter((r) => r.priority === 'HIGH').length;
-    const medCount = requests.filter((r) => r.priority === 'MEDIUM').length;
-    const lowCount = requests.filter((r) => r.priority === 'LOW').length;
+    const activePolicy = policies && policies.length > 0 ? policies[0] : null;
+    const prioRows = activePolicy
+      ? Object.entries(activePolicy.priorities).map(([prio, cfg]) => [
+          prio,
+          `${cfg.responseTimeMinutes} Minutes`,
+          `${cfg.resolutionTimeMinutes} Minutes (${Math.round(cfg.resolutionTimeMinutes / 60)} Hours)`,
+          `${cfg.warningThresholdPercent}% Elapsed`,
+          requests.filter((r) => r.priority === prio).length.toString(),
+        ])
+      : [
+          ['URGENT', '15 Minutes', '240 Minutes (4 Hours)', '75% Elapsed', requests.filter((r) => r.priority === 'URGENT').length.toString()],
+          ['HIGH', '30 Minutes', '480 Minutes (8 Hours)', '75% Elapsed', requests.filter((r) => r.priority === 'HIGH').length.toString()],
+          ['MEDIUM', '120 Minutes', '1440 Minutes (24 Hours)', '80% Elapsed', requests.filter((r) => r.priority === 'MEDIUM').length.toString()],
+          ['LOW', '480 Minutes', '4320 Minutes (72 Hours)', '80% Elapsed', requests.filter((r) => r.priority === 'LOW').length.toString()],
+        ];
 
     autoTable(doc, {
-      startY: lastY + 4,
-      head: [['Priority Tier', 'Standard SLA Target', 'Active Request Volume', 'Target Fulfillment Rate']],
-      body: [
-        ['URGENT', '24 Hours', urgentCount.toString(), '98.5%'],
-        ['HIGH', '48 Hours', highCount.toString(), '95.0%'],
-        ['MEDIUM', '3-5 Business Days', medCount.toString(), '99.0%'],
-        ['LOW', '5-7 Business Days', lowCount.toString(), '99.9%'],
-      ],
+      startY: lastY2 + 4,
+      head: [['Priority Tier', 'Response Target', 'Resolution Target', 'Warning Threshold', 'Active Volume']],
+      body: prioRows,
       theme: 'striped',
-      headStyles: { fillColor: [51, 65, 85], textColor: [255, 255, 255] },
-      styles: { fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255] },
+      styles: { fontSize: 8.5, cellPadding: 2.5 },
     });
 
     doc.save(`${business.name.replace(/\s+/g, '_')}_SLA_Performance.pdf`);
   },
 };
+

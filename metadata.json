@@ -1,6 +1,6 @@
 {
   "name": "OmniFlow AI - Generic B2B SaaS Workflow Platform",
-  "description": "Generic multi-tenant B2B SaaS platform enabling any business to convert natural language operations into executable multi-role workflows, live customer-staff lifecycle tracking, AI RAG assistant, and PDF reports.",
+  "description": "Generic multi-tenant B2B SaaS platform enabling any business to convert natural language operations into executable multi-role workflows, live customer-staff lifecycle tracking, Dynamic SLA Management with Machine Learning SLA breach prediction, AI RAG assistant, and PDF dossiers.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

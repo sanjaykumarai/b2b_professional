@@ -123,6 +123,178 @@ export interface RequestChatMessage {
   isAi?: boolean;
 }
 
+export type SlaStatus = 'ON_TRACK' | 'WARNING' | 'AT_RISK' | 'BREACHED' | 'RESOLVED' | 'PAUSED';
+
+export interface SlaPriorityConfig {
+  responseTimeMinutes: number; // e.g. 15, 30, 120, 480
+  resolutionTimeMinutes: number; // e.g. 240, 480, 1440, 4320
+  warningThresholdPercent: number; // e.g. 75 or 80
+}
+
+export interface SlaEscalationRule {
+  id: string;
+  trigger: 'WARNING' | 'AT_RISK' | 'BREACH';
+  action: 'NOTIFY_OWNER' | 'NOTIFY_ASSIGNEE' | 'AUTO_REASSIGN' | 'BUMP_PRIORITY' | 'NOTIFY_CUSTOMER';
+  targetRole?: UserRole;
+  targetUserId?: string;
+  note?: string;
+}
+
+export interface SlaBusinessHoursConfig {
+  enabled: boolean;
+  timezone: string; // e.g. "UTC"
+  startHour: number; // 9 = 09:00
+  endHour: number; // 17 = 17:00
+  workDays: number[]; // [1, 2, 3, 4, 5] for Mon-Fri
+}
+
+export interface SlaPolicy {
+  id: string;
+  businessId: string;
+  workflowId: string; // '*' or specific workflow id
+  name: string;
+  description: string;
+  isActive: boolean;
+  isDefault?: boolean;
+  priorities: {
+    LOW: SlaPriorityConfig;
+    MEDIUM: SlaPriorityConfig;
+    HIGH: SlaPriorityConfig;
+    URGENT: SlaPriorityConfig;
+  };
+  businessHours: SlaBusinessHoursConfig;
+  escalationRules: SlaEscalationRule[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Notification {
+  id: string;
+  userId?: string;
+  businessId: string;
+  requestId?: string;
+  type: 'SLA_WARNING' | 'SLA_BREACH' | 'SLA_RISK' | 'REQUEST_UPDATE' | 'GENERAL';
+  title: string;
+  message: string;
+  isRead: boolean;
+  createdAt: string;
+}
+
+export interface SlaEvent {
+  id: string;
+  requestId: string;
+  policyId: string;
+  eventType:
+    | 'SLA_STARTED'
+    | 'FIRST_RESPONSE'
+    | 'WARNING_TRIGGERED'
+    | 'AT_RISK_TRIGGERED'
+    | 'BREACH_OCCURRED'
+    | 'PAUSED'
+    | 'RESUMED'
+    | 'RESOLVED'
+    | 'ESCALATION';
+  details: string;
+  timestamp: string;
+  actorName?: string;
+  actorRole?: UserRole;
+}
+
+export interface RequestSlaInfo {
+  policyId: string;
+  policyName: string;
+  status: SlaStatus;
+  responseTargetMinutes: number;
+  resolutionTargetMinutes: number;
+  warningThresholdPercent: number;
+  responseDeadline: string;
+  resolutionDeadline: string;
+  firstRespondedAt?: string;
+  resolvedAt?: string;
+  responseDurationMinutes?: number;
+  resolutionDurationMinutes?: number;
+  responseBreached: boolean;
+  resolutionBreached: boolean;
+  isPaused: boolean;
+  pausedAt?: string;
+  totalPausedMinutes: number;
+  elapsedMinutes: number;
+  remainingMinutes: number;
+  breachDurationMinutes?: number;
+  events: SlaEvent[];
+}
+
+export interface SlaRiskFactor {
+  factor: string;
+  impact: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | 'CRITICAL';
+  weight: number;
+  description: string;
+}
+
+export interface SlaBreachPrediction {
+  requestId: string;
+  breachProbability: number; // 0 - 100%
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  estimatedResolutionMinutes: number;
+  predictedBreachTime?: string;
+  riskFactors: SlaRiskFactor[];
+  recommendations: string[];
+  confidence: number;
+  modelType: 'PYTHON_ML_RANDOM_FOREST' | 'DETERMINISTIC_ENSEMBLE';
+  featuresAnalyzed: {
+    requestPriorityScore: number;
+    currentStepRatio: number;
+    assignedStaffWorkload: number;
+    requestAgeMinutes: number;
+    customerResponseDelayMinutes: number;
+    reassignmentCount: number;
+    hasDocDependency: boolean;
+    historicalWorkflowBreachRate: number;
+  };
+  generatedAt: string;
+}
+
+export interface SlaAnalyticsSummary {
+  totalMonitoredRequests: number;
+  complianceRate: number;
+  activeOnTrack: number;
+  activeWarning: number;
+  activeAtRisk: number;
+  breachedCount: number;
+  resolvedOnTime: number;
+  avgResponseTimeMinutes: number;
+  avgResolutionTimeMinutes: number;
+  priorityBreakdown: Record<
+    string,
+    { total: number; complianceRate: number; breaches: number; avgResolutionMins: number }
+  >;
+  workflowBreakdown: Record<
+    string,
+    { workflowName: string; total: number; complianceRate: number; breaches: number }
+  >;
+  recentBreaches: Array<{
+    requestId: string;
+    requestTitle: string;
+    customerName: string;
+    priority: string;
+    breachedAt: string;
+    breachDurationMinutes: number;
+    policyName: string;
+    assignedStaffName?: string;
+  }>;
+  atRiskQueue: Array<{
+    requestId: string;
+    requestTitle: string;
+    customerName: string;
+    priority: string;
+    status: SlaStatus;
+    remainingMinutes: number;
+    resolutionDeadline: string;
+    assignedStaffName?: string;
+    breachProbability?: number;
+  }>;
+}
+
 export interface CustomerRequest {
   id: string;
   businessId: string;
@@ -147,6 +319,8 @@ export interface CustomerRequest {
   completedAt?: string;
   deliverableSummary?: string;
   approvalStatus?: 'PENDING' | 'APPROVED' | 'CHANGES_REQUESTED';
+  slaInfo?: RequestSlaInfo;
+  slaPrediction?: SlaBreachPrediction;
 }
 
 export interface BusinessDocument {

@@ -14,6 +14,7 @@ import {
   BookOpen,
   Layers,
   ArrowRight,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -42,9 +43,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, onOpe
     (r) => r.status === 'IN_PROGRESS' || r.status === 'ASSIGNED'
   ).length;
 
+  const atRiskCount = requests.filter(
+    (r) =>
+      r.status !== 'COMPLETED' &&
+      r.status !== 'REJECTED' &&
+      (r.slaInfo?.status === 'AT_RISK' ||
+        r.slaInfo?.status === 'WARNING' ||
+        r.slaInfo?.status === 'BREACHED')
+  ).length;
+
   // Navigation Items per role
   const ownerNav: NavItem[] = [
     { id: 'owner_dashboard', label: 'Executive Dashboard', icon: LayoutDashboard },
+    { id: 'owner_sla', label: 'SLA & Breach Predictor', icon: ShieldAlert, badge: atRiskCount > 0 ? `${atRiskCount} risk` : undefined, highlight: atRiskCount > 0 },
     { id: 'owner_workflows', label: 'Workflow Engine', icon: GitBranch, badge: `${workflows.length}` },
     { id: 'owner_requests', label: 'Request Master', icon: Inbox, badge: pendingCount > 0 ? `${pendingCount}` : undefined },
     { id: 'owner_users', label: 'Staff & Customers', icon: Users },
@@ -54,6 +65,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, onOpe
 
   const staffNav: NavItem[] = [
     { id: 'staff_dashboard', label: 'Staff Workload', icon: LayoutDashboard },
+    { id: 'staff_sla', label: 'SLA Health & Queue', icon: ShieldAlert, badge: atRiskCount > 0 ? `${atRiskCount} risk` : undefined },
     { id: 'staff_requests', label: 'Task Execution Queue', icon: Inbox, badge: inProgressCount > 0 ? `${inProgressCount}` : undefined },
     { id: 'staff_knowledge', label: 'Knowledge Base', icon: BookOpen },
     { id: 'staff_reports', label: 'Fulfillment Reports', icon: FileBarChart },

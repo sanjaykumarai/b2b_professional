@@ -4,6 +4,7 @@ import { useWorkflow } from '../../context/WorkflowContext';
 import { ServiceOffering } from '../../types';
 import { DynamicRequestForm } from '../requests/DynamicRequestForm';
 import { StatusBadge, PriorityBadge } from '../common/Badge';
+import { SlaBadge } from '../sla/SlaBadge';
 import { RequestDetailsModal } from '../requests/RequestDetailsModal';
 import {
   Layers,
@@ -172,6 +173,7 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ currentTab, onSelect
                     <span className="font-mono text-xs text-indigo-400 light:text-indigo-600 font-semibold">{req.id}</span>
                     <StatusBadge status={req.status} size="sm" />
                     <PriorityBadge priority={req.priority} />
+                    <SlaBadge status={req.slaInfo?.status} size="sm" />
                     <span className="text-[11px] text-slate-400 light:text-slate-600 uppercase tracking-wider font-mono">{req.serviceName}</span>
                   </div>
 

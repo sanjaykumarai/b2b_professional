@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useWorkflow } from '../../context/WorkflowContext';
 import { useTheme } from '../../context/ThemeContext';
 import { RoleBadge } from './Badge';
+import { api } from '../../services/api';
+import { Notification } from '../../types';
 import {
   Sparkles,
   FileText,
@@ -16,6 +18,13 @@ import {
   Sun,
   Moon,
   Command,
+  Bell,
+  BellRing,
+  AlertTriangle,
+  AlertOctagon,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -42,6 +51,38 @@ export const Header: React.FC<HeaderProps> = ({ onOpenOnboarding }) => {
 
   const [bizDropdownOpen, setBizDropdownOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+
+  // Fetch real notifications
+  const fetchNotifications = async () => {
+    if (!currentUser?.id) return;
+    try {
+      const data = await api.getNotifications(currentUser.id, currentBusiness?.id);
+      setNotifications(data);
+    } catch (err) {
+      console.warn('Failed to fetch notifications:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(interval);
+  }, [currentUser?.id, currentBusiness?.id]);
+
+  const handleMarkAsRead = async (id: string) => {
+    try {
+      await api.markNotificationRead(id);
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, isRead: true } : n))
+      );
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const unreadCount = notifications.filter((n) => !n.isRead).length;
 
   return (
     <header className="sticky top-0 z-40 backdrop-blur-xl border-b transition-colors duration-200 bg-[#08090C]/80 border-white/[0.08] text-slate-200 light:bg-white/80 light:border-slate-200 light:text-slate-800">
@@ -203,8 +244,91 @@ export const Header: React.FC<HeaderProps> = ({ onOpenOnboarding }) => {
           </div>
         </div>
 
-        {/* Right: Actions (AI Generator, Gemini Chat, Reports, User Badge) */}
+        {/* Right: Actions (Notifications, AI Generator, Gemini Chat, Reports, User Badge) */}
         <div className="flex items-center gap-2.5 sm:gap-3">
+          {/* Notification Bell Dropdown */}
+          <div className="relative">
+            <button
+              id="header-notifications-btn"
+              onClick={() => setNotificationsOpen(!notificationsOpen)}
+              className="relative p-2 rounded-lg border transition-all duration-200 bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.08] hover:border-white/[0.15] text-slate-300 hover:text-white light:bg-slate-100 light:hover:bg-slate-200 light:border-slate-200 light:text-slate-700"
+              title="Notifications & SLA Alerts"
+            >
+              {unreadCount > 0 ? (
+                <BellRing className="w-4 h-4 text-orange-400 animate-pulse" />
+              ) : (
+                <Bell className="w-4 h-4 text-slate-400" />
+              )}
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full text-[9px] font-mono font-bold bg-rose-500 text-white shadow-xs">
+                  {unreadCount}
+                </span>
+              )}
+            </button>
+
+            {notificationsOpen && (
+              <div className="absolute right-0 mt-2 w-80 sm:w-96 backdrop-blur-2xl rounded-2xl border py-2.5 z-50 shadow-2xl animate-in fade-in duration-100 bg-[#0E1017]/95 border-white/[0.12] light:bg-white/95 light:border-slate-200">
+                <div className="px-4 py-2 flex items-center justify-between border-b border-white/[0.06] light:border-slate-100">
+                  <div className="flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5 text-indigo-400" />
+                    <span className="text-xs font-bold text-slate-100 light:text-slate-900 uppercase font-mono tracking-wider">
+                      Live SLA & Operations Alerts
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    {unreadCount} Unread
+                  </span>
+                </div>
+
+                <div className="max-h-80 overflow-y-auto divide-y divide-white/[0.04] light:divide-slate-100">
+                  {notifications.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-slate-400 font-mono">
+                      No new alerts or notifications.
+                    </div>
+                  ) : (
+                    notifications.map((notif) => (
+                      <div
+                        key={notif.id}
+                        onClick={() => handleMarkAsRead(notif.id)}
+                        className={`p-3 transition cursor-pointer text-xs flex items-start gap-2.5 ${
+                          notif.isRead
+                            ? 'opacity-60 bg-transparent hover:bg-white/[0.02]'
+                            : 'bg-indigo-500/5 hover:bg-indigo-500/10 font-medium'
+                        }`}
+                      >
+                        <div className="mt-0.5 shrink-0">
+                          {notif.type === 'SLA_BREACH' ? (
+                            <AlertOctagon className="w-4 h-4 text-rose-400" />
+                          ) : notif.type === 'SLA_WARNING' ? (
+                            <AlertTriangle className="w-4 h-4 text-orange-400" />
+                          ) : notif.type === 'SLA_RISK' ? (
+                            <Clock className="w-4 h-4 text-amber-400" />
+                          ) : (
+                            <CheckCircle2 className="w-4 h-4 text-indigo-400" />
+                          )}
+                        </div>
+
+                        <div className="flex-1 space-y-0.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-bold text-slate-200 light:text-slate-800 text-[11px]">
+                              {notif.title}
+                            </span>
+                            <span className="text-[9px] font-mono text-slate-500">
+                              {new Date(notif.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 light:text-slate-600 leading-snug">
+                            {notif.message}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* AI Workflow Generator (Owner Only) */}
           {currentRole === 'OWNER' && (
             <button
@@ -297,3 +421,4 @@ export const Header: React.FC<HeaderProps> = ({ onOpenOnboarding }) => {
     </header>
   );
 };
+

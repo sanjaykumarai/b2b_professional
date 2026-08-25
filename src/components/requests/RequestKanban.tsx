@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { CustomerRequest } from '../../types';
 import { StatusBadge, PriorityBadge } from '../common/Badge';
+import { SlaBadge } from '../sla/SlaBadge';
 import {
   Clock,
   User,
@@ -109,12 +110,22 @@ export const RequestKanban: React.FC<RequestKanbanProps> = ({ requests, onSelect
                     onClick={() => onSelectRequest(req)}
                     className="bg-white/[0.04] hover:bg-white/[0.08] light:bg-white light:hover:bg-slate-50 border border-white/[0.08] hover:border-indigo-500/40 light:border-slate-300/80 light:hover:border-indigo-300 rounded-xl p-3.5 shadow-sm light:shadow-[0_1px_3px_rgba(0,0,0,0.05)] cursor-pointer transition-all duration-150 space-y-2.5 group"
                   >
-                    {/* Top Row: Service & Priority */}
-                    <div className="flex items-center justify-between gap-1.5">
+                    {/* Top Row: Service & Priority & SLA */}
+                    <div className="flex items-center justify-between gap-1.5 flex-wrap">
                       <span className="text-[9px] font-bold font-mono text-slate-400 light:text-slate-500 uppercase tracking-widest truncate max-w-[110px]">
                         {req.serviceName}
                       </span>
-                      <PriorityBadge priority={req.priority} />
+                      <div className="flex items-center gap-1">
+                        <PriorityBadge priority={req.priority} />
+                        {req.slaInfo && (
+                          <SlaBadge
+                            status={req.slaInfo.status}
+                            remainingMinutes={req.slaInfo.remainingMinutes}
+                            isPaused={req.slaInfo.isPaused}
+                            breachPrediction={req.slaPrediction}
+                          />
+                        )}
+                      </div>
                     </div>
 
                     {/* Title */}

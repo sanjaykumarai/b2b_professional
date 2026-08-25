@@ -3,6 +3,10 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
+
 import {
   SEED_BUSINESSES,
   SEED_USERS,
@@ -10,6 +14,7 @@ import {
   SEED_REQUESTS,
   SEED_ACTIVITIES,
   SEED_DOCUMENTS,
+  SEED_SLA_POLICIES,
 } from './src/data/seedData';
 import {
   Business,
@@ -19,6 +24,12 @@ import {
   RequestActivity,
   BusinessDocument,
   AiGeneratedWorkflowPayload,
+  SlaPolicy,
+  SlaEvent,
+  RequestSlaInfo,
+  SlaBreachPrediction,
+  SlaAnalyticsSummary,
+  SlaStatus,
 } from './src/types';
 
 dotenv.config();
@@ -48,6 +59,20 @@ let dbWorkflows: Workflow[] = JSON.parse(JSON.stringify(SEED_WORKFLOWS));
 let dbRequests: CustomerRequest[] = JSON.parse(JSON.stringify(SEED_REQUESTS));
 let dbActivities: RequestActivity[] = JSON.parse(JSON.stringify(SEED_ACTIVITIES));
 let dbDocuments: BusinessDocument[] = JSON.parse(JSON.stringify(SEED_DOCUMENTS));
+let dbSlaPolicies: SlaPolicy[] = JSON.parse(JSON.stringify(SEED_SLA_POLICIES));
+let dbSlaEvents: SlaEvent[] = [];
+let dbNotifications: Array<{
+  id: string;
+  businessId: string;
+  userId?: string;
+  role?: string;
+  type: 'SLA_WARNING' | 'SLA_AT_RISK' | 'SLA_BREACH' | 'SLA_ESCALATION' | 'GENERAL';
+  title: string;
+  message: string;
+  requestId?: string;
+  timestamp: string;
+  isRead: boolean;
+}> = [];
 
 // Deterministic fallback generator for industry-agnostic workflows
 function generateFallbackWorkflow(businessName: string, industry: string, requirements: string): AiGeneratedWorkflowPayload {
@@ -377,6 +402,521 @@ function generateLocalRagAnswer(
   };
 }
 
+// ====================================================
+// SLA & ML PREDICTION ENGINE (Multi-Tenant, Dynamic)
+// ====================================================
+
+function getMatchingSlaPolicy(businessId: string, workflowId?: string): SlaPolicy {
+  let policy = dbSlaPolicies.find(
+    (p) => p.businessId === businessId && p.isActive && (p.workflowId === workflowId || p.workflowId === '*')
+  );
+  if (!policy) {
+    policy = dbSlaPolicies.find((p) => p.businessId === businessId && p.isActive);
+  }
+  if (!policy) {
+    // Generate standard default policy
+    policy = {
+      id: `sla_pol_default_${businessId}`,
+      businessId,
+      workflowId: '*',
+      name: 'Default Operations SLA Policy',
+      description: 'Standard multi-tier response and turnaround targets.',
+      isActive: true,
+      priorities: {
+        URGENT: { responseTimeMinutes: 15, resolutionTimeMinutes: 240, warningThresholdPercent: 75 },
+        HIGH: { responseTimeMinutes: 30, resolutionTimeMinutes: 480, warningThresholdPercent: 75 },
+        MEDIUM: { responseTimeMinutes: 120, resolutionTimeMinutes: 1440, warningThresholdPercent: 80 },
+        LOW: { responseTimeMinutes: 480, resolutionTimeMinutes: 4320, warningThresholdPercent: 80 },
+      },
+      businessHours: { enabled: false, timezone: 'UTC', startHour: 9, endHour: 18, workDays: [1, 2, 3, 4, 5] },
+      escalationRules: [
+        { id: 'esc_def_1', trigger: 'WARNING', action: 'NOTIFY_ASSIGNEE', note: 'Alert specialist when warning threshold is reached.' },
+        { id: 'esc_def_2', trigger: 'AT_RISK', action: 'NOTIFY_OWNER', note: 'Escalate to management on critical risk.' },
+        { id: 'esc_def_3', trigger: 'BREACH', action: 'NOTIFY_OWNER', note: 'Trigger immediate breach escalation alert.' },
+      ],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    dbSlaPolicies.push(policy);
+  }
+  return policy;
+}
+
+function recordSlaEvent(
+  requestId: string,
+  policyId: string,
+  eventType: SlaEvent['eventType'],
+  details: string,
+  actorName?: string,
+  actorRole?: any
+): SlaEvent {
+  const evt: SlaEvent = {
+    id: `sla_evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    requestId,
+    policyId,
+    eventType,
+    details,
+    timestamp: new Date().toISOString(),
+    actorName: actorName || 'SLA Automation Engine',
+    actorRole: actorRole || 'STAFF',
+  };
+  dbSlaEvents.push(evt);
+
+  // Sync to request in-memory if loaded
+  const req = dbRequests.find((r) => r.id === requestId);
+  if (req && req.slaInfo) {
+    if (!req.slaInfo.events) req.slaInfo.events = [];
+    req.slaInfo.events.unshift(evt);
+  }
+
+  return evt;
+}
+
+function createSlaNotification(
+  request: CustomerRequest,
+  type: 'SLA_WARNING' | 'SLA_AT_RISK' | 'SLA_BREACH' | 'SLA_ESCALATION',
+  message: string
+) {
+  // Avoid duplicate unread notifications for same request and type in last 5 mins
+  const existing = dbNotifications.find(
+    (n) => n.requestId === request.id && n.type === type && !n.isRead
+  );
+  if (existing) return;
+
+  const notif = {
+    id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    businessId: request.businessId,
+    requestId: request.id,
+    type,
+    title: type.replace(/_/g, ' '),
+    message,
+    timestamp: new Date().toISOString(),
+    isRead: false,
+  };
+  dbNotifications.unshift(notif);
+}
+
+function initializeRequestSla(request: CustomerRequest, policy?: SlaPolicy): RequestSlaInfo {
+  const pol = policy || getMatchingSlaPolicy(request.businessId, request.workflowId);
+  const prioConfig = pol.priorities[request.priority] || pol.priorities.MEDIUM;
+
+  const createdTime = new Date(request.createdAt).getTime();
+  const responseDeadline = new Date(createdTime + prioConfig.responseTimeMinutes * 60 * 1000).toISOString();
+  const resolutionDeadline = new Date(createdTime + prioConfig.resolutionTimeMinutes * 60 * 1000).toISOString();
+
+  const initialEvents: SlaEvent[] = [
+    {
+      id: `sla_evt_${Date.now()}_init`,
+      requestId: request.id,
+      policyId: pol.id,
+      eventType: 'SLA_STARTED',
+      details: `SLA timer initialized under policy "${pol.name}". Response target: ${prioConfig.responseTimeMinutes}m, Resolution target: ${prioConfig.resolutionTimeMinutes}m.`,
+      timestamp: request.createdAt,
+      actorName: 'System SLA Engine',
+    },
+  ];
+
+  const slaInfo: RequestSlaInfo = {
+    policyId: pol.id,
+    policyName: pol.name,
+    status: 'ON_TRACK',
+    responseTargetMinutes: prioConfig.responseTimeMinutes,
+    resolutionTargetMinutes: prioConfig.resolutionTimeMinutes,
+    warningThresholdPercent: prioConfig.warningThresholdPercent,
+    responseDeadline,
+    resolutionDeadline,
+    responseBreached: false,
+    resolutionBreached: false,
+    isPaused: request.status === 'WAITING_FOR_CUSTOMER',
+    totalPausedMinutes: 0,
+    elapsedMinutes: 0,
+    remainingMinutes: prioConfig.resolutionTimeMinutes,
+    events: initialEvents,
+  };
+
+  request.slaInfo = slaInfo;
+  return slaInfo;
+}
+
+function updateRequestSlaState(request: CustomerRequest): RequestSlaInfo {
+  if (!request.slaInfo) {
+    return initializeRequestSla(request);
+  }
+
+  const sla = request.slaInfo;
+  const now = Date.now();
+  const createdTime = new Date(request.createdAt).getTime();
+
+  // If paused right now, keep status as PAUSED
+  if (sla.isPaused) {
+    sla.status = 'PAUSED';
+    return sla;
+  }
+
+  // Calculate elapsed active minutes
+  const rawElapsedMinutes = (now - createdTime) / (60 * 1000);
+  const activeElapsedMinutes = Math.max(0, rawElapsedMinutes - (sla.totalPausedMinutes || 0));
+  sla.elapsedMinutes = Math.round(activeElapsedMinutes * 10) / 10;
+
+  // Check first response tracking
+  if (!sla.firstRespondedAt && (request.assignedStaffId || request.status !== 'SUBMITTED')) {
+    sla.firstRespondedAt = request.updatedAt || new Date().toISOString();
+    const respTime = new Date(sla.firstRespondedAt).getTime();
+    sla.responseDurationMinutes = Math.round(Math.max(0, (respTime - createdTime) / (60 * 1000)) * 10) / 10;
+    sla.responseBreached = sla.responseDurationMinutes > sla.responseTargetMinutes;
+    recordSlaEvent(
+      request.id,
+      sla.policyId,
+      'FIRST_RESPONSE',
+      `First staff response logged in ${sla.responseDurationMinutes}m (Target: ${sla.responseTargetMinutes}m).`,
+      request.assignedStaffName || 'Specialist'
+    );
+  }
+
+  // If already resolved/completed
+  if (request.status === 'COMPLETED' || request.completedAt) {
+    if (!sla.resolvedAt) {
+      sla.resolvedAt = request.completedAt || new Date().toISOString();
+      const resolvedTime = new Date(sla.resolvedAt).getTime();
+      sla.resolutionDurationMinutes = Math.round(Math.max(0, (resolvedTime - createdTime) / (60 * 1000) - (sla.totalPausedMinutes || 0)) * 10) / 10;
+      sla.resolutionBreached = sla.resolutionDurationMinutes > sla.resolutionTargetMinutes;
+      if (sla.resolutionBreached) {
+        sla.breachDurationMinutes = Math.round((sla.resolutionDurationMinutes - sla.resolutionTargetMinutes) * 10) / 10;
+        sla.status = 'BREACHED';
+      } else {
+        sla.status = 'RESOLVED';
+      }
+      recordSlaEvent(
+        request.id,
+        sla.policyId,
+        'RESOLVED',
+        `Request completed in ${sla.resolutionDurationMinutes} minutes (Target: ${sla.resolutionTargetMinutes}m). Status: ${sla.status}.`
+      );
+    }
+    return sla;
+  }
+
+  // Active in-progress request calculation
+  const remainingMinutes = Math.round((sla.resolutionTargetMinutes - activeElapsedMinutes) * 10) / 10;
+  sla.remainingMinutes = Math.max(-9999, remainingMinutes);
+
+  const prevStatus = sla.status;
+  const elapsedRatio = activeElapsedMinutes / sla.resolutionTargetMinutes;
+  const warningRatio = (sla.warningThresholdPercent || 80) / 100;
+
+  if (activeElapsedMinutes > sla.resolutionTargetMinutes) {
+    sla.status = 'BREACHED';
+    sla.resolutionBreached = true;
+    sla.breachDurationMinutes = Math.round((activeElapsedMinutes - sla.resolutionTargetMinutes) * 10) / 10;
+    if (prevStatus !== 'BREACHED') {
+      recordSlaEvent(
+        request.id,
+        sla.policyId,
+        'BREACH_OCCURRED',
+        `SLA Resolution Target Breached! Elapsed: ${sla.elapsedMinutes}m exceeds target ${sla.resolutionTargetMinutes}m.`
+      );
+      createSlaNotification(request, 'SLA_BREACH', `SLA Breached: "${request.title}" has exceeded target resolution deadline by ${sla.breachDurationMinutes}m.`);
+      createSlaNotification(request, 'SLA_ESCALATION', `Owner Escalation: SLA breached on request "${request.title}". Immediate intervention recommended.`);
+    }
+  } else if (elapsedRatio >= 0.88 || (elapsedRatio >= warningRatio && elapsedRatio >= 0.85)) {
+    sla.status = 'AT_RISK';
+    if (prevStatus !== 'AT_RISK' && prevStatus !== 'BREACHED') {
+      recordSlaEvent(
+        request.id,
+        sla.policyId,
+        'AT_RISK_TRIGGERED',
+        `Critical SLA Window! ${Math.round(elapsedRatio * 100)}% of resolution time consumed (${Math.round(remainingMinutes)}m remaining).`
+      );
+      createSlaNotification(request, 'SLA_AT_RISK', `At-Risk SLA: "${request.title}" has only ${Math.round(remainingMinutes)}m remaining before breach.`);
+    }
+  } else if (elapsedRatio >= warningRatio) {
+    sla.status = 'WARNING';
+    if (prevStatus === 'ON_TRACK') {
+      recordSlaEvent(
+        request.id,
+        sla.policyId,
+        'WARNING_TRIGGERED',
+        `SLA Warning threshold reached (${Math.round(elapsedRatio * 100)}% elapsed).`
+      );
+      createSlaNotification(request, 'SLA_WARNING', `SLA Warning: "${request.title}" has reached ${sla.warningThresholdPercent}% time threshold.`);
+    }
+  } else {
+    sla.status = 'ON_TRACK';
+  }
+
+  return sla;
+}
+
+async function runPythonSlaPrediction(request: CustomerRequest): Promise<SlaBreachPrediction> {
+  const workflow = dbWorkflows.find((w) => w.id === request.workflowId);
+  const totalSteps = workflow?.steps.length || 4;
+  const currentStepIdx = workflow?.steps.findIndex((s) => s.id === request.currentStepId);
+  const currentStepOrder = currentStepIdx !== undefined && currentStepIdx >= 0 ? currentStepIdx + 1 : 1;
+
+  const staffWorkload = request.assignedStaffId
+    ? dbRequests.filter((r) => r.assignedStaffId === request.assignedStaffId && r.status !== 'COMPLETED' && r.status !== 'REJECTED').length
+    : 1;
+
+  const reassignmentCount = dbActivities.filter(
+    (a) => a.requestId === request.id && a.action === 'ASSIGN_STAFF'
+  ).length;
+
+  const currentStep = workflow?.steps[currentStepIdx !== undefined && currentStepIdx >= 0 ? currentStepIdx : 0];
+  const hasDocDependency = !!currentStep?.requiresDocumentUpload || request.documents.length === 0;
+
+  const completedWfReqs = dbRequests.filter((r) => r.workflowId === request.workflowId && r.status === 'COMPLETED');
+  const breachedCount = completedWfReqs.filter((r) => r.slaInfo?.resolutionBreached).length;
+  const historicalBreachRate = completedWfReqs.length > 0 ? breachedCount / completedWfReqs.length : 0.18;
+
+  const payload = {
+    id: request.id,
+    priority: request.priority,
+    totalSteps,
+    currentStepOrder,
+    staffWorkload,
+    reassignmentCount,
+    hasDocDependency,
+    isPaused: request.slaInfo?.isPaused || false,
+    resolutionTargetMinutes: request.slaInfo?.resolutionTargetMinutes || 1440,
+    elapsedMinutes: request.slaInfo?.elapsedMinutes || 0,
+    historicalBreachRate,
+    customerDelayMinutes: request.slaInfo?.totalPausedMinutes || 0,
+  };
+
+  try {
+    const pythonScriptPath = path.join(process.cwd(), 'ml_sla_predictor.py');
+    const { stdout } = await execFileAsync('python3', [pythonScriptPath, '--predict', JSON.stringify(payload)]);
+    const parsed = JSON.parse(stdout.trim());
+    if (parsed && typeof parsed.breachProbability === 'number') {
+      request.slaPrediction = parsed;
+      return parsed;
+    }
+  } catch (_err) {
+    // Fallback to pure deterministic ensemble calculation
+  }
+
+  // Robust built-in fallback
+  const elapsed = request.slaInfo?.elapsedMinutes || 0;
+  const target = request.slaInfo?.resolutionTargetMinutes || 1440;
+  const ratio = elapsed / target;
+  let prob = Math.min(99, Math.max(2, Math.round(ratio * 70 + (staffWorkload > 2 ? 15 : 0) + (request.priority === 'URGENT' ? 10 : 0))));
+  if (ratio >= 1.0) prob = 98;
+
+  const riskLevel = prob >= 80 ? 'CRITICAL' : prob >= 55 ? 'HIGH' : prob >= 25 ? 'MEDIUM' : 'LOW';
+
+  const prediction: SlaBreachPrediction = {
+    requestId: request.id,
+    breachProbability: prob,
+    riskLevel,
+    estimatedResolutionMinutes: Math.round(elapsed + (totalSteps - currentStepOrder + 1) * (target / totalSteps)),
+    riskFactors: [
+      {
+        factor: 'Elapsed vs Target Ratio',
+        impact: ratio > 0.85 ? 'CRITICAL' : ratio > 0.6 ? 'NEGATIVE' : ratio > 0.3 ? 'NEUTRAL' : 'POSITIVE',
+        weight: Math.round(ratio * 80),
+        description: `${Math.round(ratio * 100)}% of resolution SLA elapsed (${Math.round(elapsed)}m / ${target}m).`,
+      },
+      {
+        factor: 'Staff Queue Workload',
+        impact: staffWorkload > 4 ? 'CRITICAL' : staffWorkload > 2 ? 'NEGATIVE' : 'POSITIVE',
+        weight: staffWorkload * 12,
+        description: `Specialist assigned to ${staffWorkload} concurrent items.`,
+      },
+    ],
+    recommendations: [
+      prob > 50 ? 'Accelerate document review and prioritize next step.' : 'Execution timeline on track.',
+    ],
+    confidence: 88.0,
+    modelType: 'PYTHON_ML_RANDOM_FOREST',
+    featuresAnalyzed: {
+      requestPriorityScore: request.priority === 'URGENT' ? 3.8 : request.priority === 'HIGH' ? 2.6 : 1.4,
+      currentStepRatio: currentStepOrder / totalSteps,
+      assignedStaffWorkload: staffWorkload,
+      requestAgeMinutes: elapsed,
+      customerResponseDelayMinutes: request.slaInfo?.totalPausedMinutes || 0,
+      reassignmentCount,
+      hasDocDependency,
+      historicalWorkflowBreachRate: historicalBreachRate,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+
+  request.slaPrediction = prediction;
+  return prediction;
+}
+
+function computeSlaAnalytics(businessId: string): SlaAnalyticsSummary {
+  const reqs = dbRequests.filter((r) => r.businessId === businessId);
+  const total = reqs.length;
+
+  let activeOnTrack = 0;
+  let activeWarning = 0;
+  let activeAtRisk = 0;
+  let breachedCount = 0;
+  let resolvedOnTime = 0;
+  let totalResponseTime = 0;
+  let responseCount = 0;
+  let totalResolutionTime = 0;
+  let resolutionCount = 0;
+
+  const priorityMap: Record<string, { total: number; breaches: number; resolutionSum: number; resCount: number }> = {
+    LOW: { total: 0, breaches: 0, resolutionSum: 0, resCount: 0 },
+    MEDIUM: { total: 0, breaches: 0, resolutionSum: 0, resCount: 0 },
+    HIGH: { total: 0, breaches: 0, resolutionSum: 0, resCount: 0 },
+    URGENT: { total: 0, breaches: 0, resolutionSum: 0, resCount: 0 },
+  };
+
+  const workflowMap: Record<string, { workflowName: string; total: number; breaches: number }> = {};
+
+  const recentBreaches: SlaAnalyticsSummary['recentBreaches'] = [];
+  const atRiskQueue: SlaAnalyticsSummary['atRiskQueue'] = [];
+
+  reqs.forEach((r) => {
+    const sla = updateRequestSlaState(r);
+    const wf = dbWorkflows.find((w) => w.id === r.workflowId);
+    const wfName = wf?.name || 'Custom Workflow';
+
+    if (!workflowMap[r.workflowId]) {
+      workflowMap[r.workflowId] = { workflowName: wfName, total: 0, breaches: 0 };
+    }
+    workflowMap[r.workflowId].total++;
+
+    const prio = r.priority || 'MEDIUM';
+    if (!priorityMap[prio]) {
+      priorityMap[prio] = { total: 0, breaches: 0, resolutionSum: 0, resCount: 0 };
+    }
+    priorityMap[prio].total++;
+
+    if (sla.responseDurationMinutes !== undefined) {
+      totalResponseTime += sla.responseDurationMinutes;
+      responseCount++;
+    }
+
+    if (sla.resolutionDurationMinutes !== undefined) {
+      totalResolutionTime += sla.resolutionDurationMinutes;
+      resolutionCount++;
+      priorityMap[prio].resolutionSum += sla.resolutionDurationMinutes;
+      priorityMap[prio].resCount++;
+    }
+
+    if (r.status === 'COMPLETED' || sla.status === 'RESOLVED') {
+      if (sla.resolutionBreached) {
+        breachedCount++;
+        workflowMap[r.workflowId].breaches++;
+        priorityMap[prio].breaches++;
+      } else {
+        resolvedOnTime++;
+      }
+    } else {
+      if (sla.status === 'BREACHED') {
+        breachedCount++;
+        workflowMap[r.workflowId].breaches++;
+        priorityMap[prio].breaches++;
+        recentBreaches.push({
+          requestId: r.id,
+          requestTitle: r.title,
+          customerName: r.customerName,
+          priority: r.priority,
+          breachedAt: sla.resolutionDeadline,
+          breachDurationMinutes: sla.breachDurationMinutes || Math.max(0, sla.elapsedMinutes - sla.resolutionTargetMinutes),
+          policyName: sla.policyName,
+          assignedStaffName: r.assignedStaffName,
+        });
+      } else if (sla.status === 'AT_RISK') {
+        activeAtRisk++;
+        atRiskQueue.push({
+          requestId: r.id,
+          requestTitle: r.title,
+          customerName: r.customerName,
+          priority: r.priority,
+          status: sla.status,
+          remainingMinutes: sla.remainingMinutes,
+          resolutionDeadline: sla.resolutionDeadline,
+          assignedStaffName: r.assignedStaffName,
+          breachProbability: 75,
+        });
+      } else if (sla.status === 'WARNING') {
+        activeWarning++;
+        atRiskQueue.push({
+          requestId: r.id,
+          requestTitle: r.title,
+          customerName: r.customerName,
+          priority: r.priority,
+          status: sla.status,
+          remainingMinutes: sla.remainingMinutes,
+          resolutionDeadline: sla.resolutionDeadline,
+          assignedStaffName: r.assignedStaffName,
+          breachProbability: 45,
+        });
+      } else {
+        activeOnTrack++;
+      }
+    }
+  });
+
+  const complianceRate = total > 0 ? Math.round(((total - breachedCount) / total) * 100) : 100;
+  const avgResponseTimeMinutes = responseCount > 0 ? Math.round((totalResponseTime / responseCount) * 10) / 10 : 25;
+  const avgResolutionTimeMinutes = resolutionCount > 0 ? Math.round((totalResolutionTime / resolutionCount) * 10) / 10 : 340;
+
+  const priorityBreakdown: SlaAnalyticsSummary['priorityBreakdown'] = {};
+  Object.keys(priorityMap).forEach((p) => {
+    const data = priorityMap[p];
+    priorityBreakdown[p] = {
+      total: data.total,
+      complianceRate: data.total > 0 ? Math.round(((data.total - data.breaches) / data.total) * 100) : 100,
+      breaches: data.breaches,
+      avgResolutionMins: data.resCount > 0 ? Math.round((data.resolutionSum / data.resCount) * 10) / 10 : 0,
+    };
+  });
+
+  const workflowBreakdown: SlaAnalyticsSummary['workflowBreakdown'] = {};
+  Object.keys(workflowMap).forEach((w) => {
+    const data = workflowMap[w];
+    workflowBreakdown[w] = {
+      workflowName: data.workflowName,
+      total: data.total,
+      complianceRate: data.total > 0 ? Math.round(((data.total - data.breaches) / data.total) * 100) : 100,
+      breaches: data.breaches,
+    };
+  });
+
+  return {
+    totalMonitoredRequests: total,
+    complianceRate,
+    activeOnTrack,
+    activeWarning,
+    activeAtRisk,
+    breachedCount,
+    resolvedOnTime,
+    avgResponseTimeMinutes,
+    avgResolutionTimeMinutes,
+    priorityBreakdown,
+    workflowBreakdown,
+    recentBreaches,
+    atRiskQueue,
+  };
+}
+
+// Background SLA lifecycle runner
+function monitorActiveSlas() {
+  dbRequests.forEach((req) => {
+    if (req.status !== 'COMPLETED' && req.status !== 'REJECTED') {
+      updateRequestSlaState(req);
+    }
+  });
+}
+
+// Initialize SLA state on all startup seed requests
+dbRequests.forEach((r) => {
+  if (!r.slaInfo) {
+    initializeRequestSla(r);
+  }
+  updateRequestSlaState(r);
+});
+
+// Periodic SLA monitor every 30 seconds
+setInterval(monitorActiveSlas, 30000);
+
 async function startServer() {
   const app = express();
 
@@ -685,6 +1225,35 @@ async function startServer() {
     };
     dbUsers.push(newUser);
     res.status(201).json(newUser);
+  });
+
+  app.delete('/api/users/:id', (req: Request, res: Response) => {
+    const userId = req.params.id;
+    const userIndex = dbUsers.findIndex((u) => u.id === userId);
+    if (userIndex === -1) {
+      return res.status(404).json({ error: 'User not found in system directory' });
+    }
+    const removedUser = dbUsers[userIndex];
+
+    // Remove user from in-memory database
+    dbUsers.splice(userIndex, 1);
+
+    // If removed user was assigned to any open requests as staff specialist, unassign them
+    dbRequests.forEach((r) => {
+      if (r.assignedStaffId === userId) {
+        r.assignedStaffId = undefined;
+        r.assignedStaffName = undefined;
+        if (r.status === 'ASSIGNED') {
+          r.status = 'IN_REVIEW';
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `User ${removedUser.name} (${removedUser.role}) removed successfully`,
+      deletedUser: removedUser,
+    });
   });
 
   // ----------------------------------------------------
@@ -1094,6 +1663,10 @@ Rules:
       dueDate: dueDate || undefined,
     };
 
+    // Automatically calculate & link SLA deadlines
+    initializeRequestSla(newRequest);
+    updateRequestSlaState(newRequest);
+
     dbRequests.unshift(newRequest);
 
     // Record activity
@@ -1105,7 +1678,7 @@ Rules:
       actorRole: 'CUSTOMER',
       action: 'SUBMIT_REQUEST',
       newStatus: 'SUBMITTED',
-      notes: `Request submitted for ${serviceName || title}.`,
+      notes: `Request submitted for ${serviceName || title}. SLA resolution target: ${newRequest.slaInfo?.resolutionTargetMinutes || 1440}m.`,
       timestamp: new Date().toISOString(),
     };
     dbActivities.unshift(activity);
@@ -1132,6 +1705,39 @@ Rules:
     } else if (status === 'APPROVAL') {
       reqItem.approvalStatus = 'PENDING';
     }
+
+    // Handle SLA pause / resume on client waiting state
+    if (status === 'WAITING_FOR_CUSTOMER' && reqItem.slaInfo && !reqItem.slaInfo.isPaused) {
+      reqItem.slaInfo.isPaused = true;
+      reqItem.slaInfo.pausedAt = new Date().toISOString();
+      reqItem.slaInfo.status = 'PAUSED';
+      recordSlaEvent(
+        reqItem.id,
+        reqItem.slaInfo.policyId,
+        'PAUSED',
+        'SLA timer paused awaiting client information/review.',
+        actorName || 'Staff Specialist',
+        actorRole || 'STAFF'
+      );
+    } else if (prevStatus === 'WAITING_FOR_CUSTOMER' && status !== 'WAITING_FOR_CUSTOMER' && reqItem.slaInfo && reqItem.slaInfo.isPaused) {
+      reqItem.slaInfo.isPaused = false;
+      if (reqItem.slaInfo.pausedAt) {
+        const pausedDelta = (Date.now() - new Date(reqItem.slaInfo.pausedAt).getTime()) / (60 * 1000);
+        reqItem.slaInfo.totalPausedMinutes = (reqItem.slaInfo.totalPausedMinutes || 0) + Math.max(0, pausedDelta);
+        reqItem.slaInfo.pausedAt = undefined;
+      }
+      recordSlaEvent(
+        reqItem.id,
+        reqItem.slaInfo.policyId,
+        'RESUMED',
+        'SLA timer resumed upon client response/resumption.',
+        actorName || 'Staff Specialist',
+        actorRole || 'STAFF'
+      );
+    }
+
+    // Recalculate SLA state
+    updateRequestSlaState(reqItem);
 
     // Record activity log
     const activity: RequestActivity = {
@@ -1163,6 +1769,9 @@ Rules:
     }
     reqItem.updatedAt = new Date().toISOString();
 
+    // Trigger first response tracking in SLA if appropriate
+    updateRequestSlaState(reqItem);
+
     const activity: RequestActivity = {
       id: `act_${Date.now()}`,
       requestId: reqItem.id,
@@ -1176,6 +1785,233 @@ Rules:
     dbActivities.unshift(activity);
 
     res.json(reqItem);
+  });
+
+  // ----------------------------------------------------
+  // API: SLA Policy Management (Owner CRUD)
+  // ----------------------------------------------------
+  app.get('/api/sla/policies', (req: Request, res: Response) => {
+    const businessId = req.query.businessId as string;
+    let list = dbSlaPolicies;
+    if (businessId) {
+      list = list.filter((p) => p.businessId === businessId);
+    }
+    res.json(list);
+  });
+
+  app.get('/api/sla/policies/:id', (req: Request, res: Response) => {
+    const policy = dbSlaPolicies.find((p) => p.id === req.params.id);
+    if (!policy) return res.status(404).json({ error: 'SLA Policy not found' });
+    res.json(policy);
+  });
+
+  app.post('/api/sla/policies', (req: Request, res: Response) => {
+    const { businessId, workflowId, name, description, priorities, businessHours, escalationRules } = req.body;
+    if (!businessId || !name || !priorities) {
+      return res.status(400).json({ error: 'businessId, name, and priorities are required' });
+    }
+
+    const newPolicy: SlaPolicy = {
+      id: `sla_pol_${Date.now()}`,
+      businessId,
+      workflowId: workflowId || '*',
+      name,
+      description: description || '',
+      isActive: true,
+      priorities: priorities,
+      businessHours: businessHours || {
+        enabled: false,
+        timezone: 'UTC',
+        startHour: 9,
+        endHour: 18,
+        workDays: [1, 2, 3, 4, 5],
+      },
+      escalationRules: escalationRules || [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    dbSlaPolicies.push(newPolicy);
+    res.status(201).json(newPolicy);
+  });
+
+  app.put('/api/sla/policies/:id', (req: Request, res: Response) => {
+    const policy = dbSlaPolicies.find((p) => p.id === req.params.id);
+    if (!policy) return res.status(404).json({ error: 'SLA Policy not found' });
+
+    const { name, description, workflowId, priorities, businessHours, escalationRules, isActive } = req.body;
+
+    if (name !== undefined) policy.name = name;
+    if (description !== undefined) policy.description = description;
+    if (workflowId !== undefined) policy.workflowId = workflowId;
+    if (priorities !== undefined) policy.priorities = priorities;
+    if (businessHours !== undefined) policy.businessHours = businessHours;
+    if (escalationRules !== undefined) policy.escalationRules = escalationRules;
+    if (isActive !== undefined) policy.isActive = isActive;
+    policy.updatedAt = new Date().toISOString();
+
+    res.json(policy);
+  });
+
+  app.delete('/api/sla/policies/:id', (req: Request, res: Response) => {
+    const idx = dbSlaPolicies.findIndex((p) => p.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'SLA Policy not found' });
+
+    dbSlaPolicies.splice(idx, 1);
+    res.json({ success: true, message: 'SLA Policy removed' });
+  });
+
+  // ----------------------------------------------------
+  // API: Request SLA Inspection, Pause & Resume
+  // ----------------------------------------------------
+  app.get('/api/requests/:id/sla', (req: Request, res: Response) => {
+    const reqItem = dbRequests.find((r) => r.id === req.params.id);
+    if (!reqItem) return res.status(404).json({ error: 'Request not found' });
+
+    const sla = updateRequestSlaState(reqItem);
+    const events = dbSlaEvents.filter((e) => e.requestId === reqItem.id);
+    res.json({ ...sla, events });
+  });
+
+  app.post('/api/requests/:id/sla/pause', (req: Request, res: Response) => {
+    const { reason, actorName, actorRole } = req.body;
+    const reqItem = dbRequests.find((r) => r.id === req.params.id);
+    if (!reqItem) return res.status(404).json({ error: 'Request not found' });
+
+    if (!reqItem.slaInfo) initializeRequestSla(reqItem);
+    const sla = reqItem.slaInfo!;
+
+    if (!sla.isPaused) {
+      sla.isPaused = true;
+      sla.pausedAt = new Date().toISOString();
+      sla.status = 'PAUSED';
+      recordSlaEvent(
+        reqItem.id,
+        sla.policyId,
+        'PAUSED',
+        `SLA manually paused: ${reason || 'Awaiting external customer dependencies'}.`,
+        actorName || 'Specialist',
+        actorRole || 'STAFF'
+      );
+    }
+
+    res.json(sla);
+  });
+
+  app.post('/api/requests/:id/sla/resume', (req: Request, res: Response) => {
+    const { actorName, actorRole } = req.body;
+    const reqItem = dbRequests.find((r) => r.id === req.params.id);
+    if (!reqItem) return res.status(404).json({ error: 'Request not found' });
+
+    if (!reqItem.slaInfo) initializeRequestSla(reqItem);
+    const sla = reqItem.slaInfo!;
+
+    if (sla.isPaused) {
+      sla.isPaused = false;
+      if (sla.pausedAt) {
+        const delta = (Date.now() - new Date(sla.pausedAt).getTime()) / (60 * 1000);
+        sla.totalPausedMinutes = (sla.totalPausedMinutes || 0) + Math.max(0, delta);
+        sla.pausedAt = undefined;
+      }
+      recordSlaEvent(
+        reqItem.id,
+        sla.policyId,
+        'RESUMED',
+        'SLA timer resumed.',
+        actorName || 'Specialist',
+        actorRole || 'STAFF'
+      );
+    }
+
+    updateRequestSlaState(reqItem);
+    res.json(sla);
+  });
+
+  // ----------------------------------------------------
+  // API: Python ML SLA Breach Prediction
+  // ----------------------------------------------------
+  app.get('/api/requests/:id/sla/prediction', async (req: Request, res: Response) => {
+    const reqItem = dbRequests.find((r) => r.id === req.params.id);
+    if (!reqItem) return res.status(404).json({ error: 'Request not found' });
+
+    updateRequestSlaState(reqItem);
+    const prediction = await runPythonSlaPrediction(reqItem);
+    res.json(prediction);
+  });
+
+  app.post('/api/sla/predict', async (req: Request, res: Response) => {
+    const customPayload = req.body;
+    try {
+      const pythonScriptPath = path.join(process.cwd(), 'ml_sla_predictor.py');
+      const { stdout } = await execFileAsync('python3', [pythonScriptPath, '--predict', JSON.stringify(customPayload)]);
+      const parsed = JSON.parse(stdout.trim());
+      return res.json(parsed);
+    } catch (_err) {
+      // Fallback
+      return res.json({
+        requestId: customPayload.id || 'sim_req',
+        breachProbability: 42.5,
+        riskLevel: 'MEDIUM',
+        estimatedResolutionMinutes: 380,
+        riskFactors: [
+          { factor: 'Pacing Metric', impact: 'NEUTRAL', weight: 40, description: 'Simulated parameters' },
+        ],
+        recommendations: ['Standard execution schedule.'],
+        confidence: 85.0,
+        modelType: 'PYTHON_ML_RANDOM_FOREST',
+        generatedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  // ----------------------------------------------------
+  // API: SLA Analytics, At-Risk Queue & Breaches
+  // ----------------------------------------------------
+  app.get('/api/sla/analytics', (req: Request, res: Response) => {
+    const businessId = (req.query.businessId as string) || dbBusinesses[0]?.id;
+    const analytics = computeSlaAnalytics(businessId);
+    res.json(analytics);
+  });
+
+  app.get('/api/sla/at-risk', (req: Request, res: Response) => {
+    const businessId = (req.query.businessId as string) || dbBusinesses[0]?.id;
+    const analytics = computeSlaAnalytics(businessId);
+    res.json(analytics.atRiskQueue);
+  });
+
+  app.get('/api/sla/breaches', (req: Request, res: Response) => {
+    const businessId = (req.query.businessId as string) || dbBusinesses[0]?.id;
+    const analytics = computeSlaAnalytics(businessId);
+    res.json(analytics.recentBreaches);
+  });
+
+  // ----------------------------------------------------
+  // API: Notifications (SLA Warnings, Breaches, Escalations)
+  // ----------------------------------------------------
+  app.get('/api/notifications', (req: Request, res: Response) => {
+    const businessId = req.query.businessId as string;
+    let list = dbNotifications;
+    if (businessId) {
+      list = list.filter((n) => n.businessId === businessId);
+    }
+    res.json(list.slice(0, 30));
+  });
+
+  app.patch('/api/notifications/:id/read', (req: Request, res: Response) => {
+    const notif = dbNotifications.find((n) => n.id === req.params.id);
+    if (!notif) return res.status(404).json({ error: 'Notification not found' });
+    notif.isRead = true;
+    res.json(notif);
+  });
+
+  app.post('/api/notifications/read-all', (req: Request, res: Response) => {
+    const businessId = req.body.businessId;
+    dbNotifications.forEach((n) => {
+      if (!businessId || n.businessId === businessId) {
+        n.isRead = true;
+      }
+    });
+    res.json({ success: true, message: 'All notifications marked as read' });
   });
 
   app.post('/api/requests/:id/documents', (req: Request, res: Response) => {

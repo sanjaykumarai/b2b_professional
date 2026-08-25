@@ -154,6 +154,26 @@ export const api = {
     });
   },
 
+  async deleteUser(userId: string): Promise<{ success: boolean; message?: string; deletedUser?: User }> {
+    try {
+      return await fetchJson<{ success: boolean; message?: string; deletedUser?: User }>(
+        `${API_BASE}/users/${userId}`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    } catch (err: any) {
+      // Local fallback in case running offline
+      const idx = SEED_USERS.findIndex((u) => u.id === userId);
+      if (idx !== -1) {
+        const removed = SEED_USERS.splice(idx, 1)[0];
+        return { success: true, message: `Removed ${removed.name}`, deletedUser: removed };
+      }
+      throw new Error(err.message || 'Failed to remove user');
+    }
+  },
+
   // Workflows
   async getWorkflows(businessId?: string): Promise<Workflow[]> {
     try {
@@ -347,6 +367,150 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    });
+  },
+
+  // ----------------------------------------------------
+  // Dynamic SLA Management & Python ML Predictions
+  // ----------------------------------------------------
+  async getSlaPolicies(businessId?: string): Promise<import('../types').SlaPolicy[]> {
+    try {
+      const url = businessId ? `${API_BASE}/sla/policies?businessId=${businessId}` : `${API_BASE}/sla/policies`;
+      return await fetchJson<import('../types').SlaPolicy[]>(url);
+    } catch {
+      return [];
+    }
+  },
+
+  async getSlaPolicy(id: string): Promise<import('../types').SlaPolicy> {
+    return await fetchJson<import('../types').SlaPolicy>(`${API_BASE}/sla/policies/${id}`);
+  },
+
+  async createSlaPolicy(payload: Partial<import('../types').SlaPolicy>): Promise<import('../types').SlaPolicy> {
+    return await fetchJson<import('../types').SlaPolicy>(`${API_BASE}/sla/policies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateSlaPolicy(id: string, payload: Partial<import('../types').SlaPolicy>): Promise<import('../types').SlaPolicy> {
+    return await fetchJson<import('../types').SlaPolicy>(`${API_BASE}/sla/policies/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteSlaPolicy(id: string): Promise<{ success: boolean; message: string }> {
+    return await fetchJson<{ success: boolean; message: string }>(`${API_BASE}/sla/policies/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getRequestSla(requestId: string): Promise<import('../types').RequestSlaInfo & { events: import('../types').SlaEvent[] }> {
+    return await fetchJson<import('../types').RequestSlaInfo & { events: import('../types').SlaEvent[] }>(
+      `${API_BASE}/requests/${requestId}/sla`
+    );
+  },
+
+  async pauseRequestSla(
+    requestId: string,
+    reason?: string,
+    actorName?: string,
+    actorRole?: string
+  ): Promise<import('../types').RequestSlaInfo> {
+    return await fetchJson<import('../types').RequestSlaInfo>(`${API_BASE}/requests/${requestId}/sla/pause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, actorName, actorRole }),
+    });
+  },
+
+  async resumeRequestSla(
+    requestId: string,
+    actorName?: string,
+    actorRole?: string
+  ): Promise<import('../types').RequestSlaInfo> {
+    return await fetchJson<import('../types').RequestSlaInfo>(`${API_BASE}/requests/${requestId}/sla/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actorName, actorRole }),
+    });
+  },
+
+  async getRequestSlaPrediction(requestId: string): Promise<import('../types').SlaBreachPrediction> {
+    return await fetchJson<import('../types').SlaBreachPrediction>(`${API_BASE}/requests/${requestId}/sla/prediction`);
+  },
+
+  async predictSlaCustom(payload: any): Promise<import('../types').SlaBreachPrediction> {
+    return await fetchJson<import('../types').SlaBreachPrediction>(`${API_BASE}/sla/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getSlaAnalytics(businessId?: string): Promise<import('../types').SlaAnalyticsSummary> {
+    try {
+      const url = businessId ? `${API_BASE}/sla/analytics?businessId=${businessId}` : `${API_BASE}/sla/analytics`;
+      return await fetchJson<import('../types').SlaAnalyticsSummary>(url);
+    } catch {
+      return {
+        totalMonitoredRequests: 0,
+        complianceRate: 100,
+        activeOnTrack: 0,
+        activeWarning: 0,
+        activeAtRisk: 0,
+        breachedCount: 0,
+        resolvedOnTime: 0,
+        avgResponseTimeMinutes: 20,
+        avgResolutionTimeMinutes: 300,
+        priorityBreakdown: {},
+        workflowBreakdown: {},
+        recentBreaches: [],
+        atRiskQueue: [],
+      };
+    }
+  },
+
+  async getAtRiskQueue(businessId?: string): Promise<import('../types').SlaAnalyticsSummary['atRiskQueue']> {
+    const url = businessId ? `${API_BASE}/sla/at-risk?businessId=${businessId}` : `${API_BASE}/sla/at-risk`;
+    return await fetchJson<import('../types').SlaAnalyticsSummary['atRiskQueue']>(url);
+  },
+
+  async getSlaBreaches(businessId?: string): Promise<import('../types').SlaAnalyticsSummary['recentBreaches']> {
+    const url = businessId ? `${API_BASE}/sla/breaches?businessId=${businessId}` : `${API_BASE}/sla/breaches`;
+    return await fetchJson<import('../types').SlaAnalyticsSummary['recentBreaches']>(url);
+  },
+
+  // ----------------------------------------------------
+  // Notifications
+  // ----------------------------------------------------
+  async getNotifications(userId?: string, businessId?: string): Promise<import('../types').Notification[]> {
+    try {
+      const params = new URLSearchParams();
+      if (userId) params.set('userId', userId);
+      if (businessId) params.set('businessId', businessId);
+      const queryString = params.toString();
+      const url = queryString ? `${API_BASE}/notifications?${queryString}` : `${API_BASE}/notifications`;
+      return await fetchJson<import('../types').Notification[]>(url);
+    } catch {
+      return [];
+    }
+  },
+
+  async markNotificationRead(id: string): Promise<any> {
+    return await fetchJson<any>(`${API_BASE}/notifications/${id}/read`, {
+      method: 'PATCH',
+    });
+  },
+
+  async markAllNotificationsRead(businessId?: string): Promise<any> {
+    return await fetchJson<any>(`${API_BASE}/notifications/read-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ businessId }),
     });
   },
 };
