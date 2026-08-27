@@ -13,6 +13,7 @@ import {
   Search,
   Sparkles,
   ShieldAlert,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface StaffViewProps {
@@ -171,7 +172,27 @@ export const StaffView: React.FC<StaffViewProps> = ({ currentTab }) => {
                 </div>
 
                 {/* Direct Action Buttons */}
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  {/* Complete Task Before Time Button */}
+                  {req.status !== 'COMPLETED' && req.status !== 'REJECTED' && (
+                    <button
+                      id={`staff-complete-task-${req.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateRequestStatus(
+                          req.id,
+                          'COMPLETED',
+                          'Staff specialist fulfilled and completed the task ahead of schedule.'
+                        );
+                      }}
+                      className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 shadow-md border border-white/10 hover:shadow-emerald-500/20"
+                      title="Complete task immediately before deadline"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5 text-white" />
+                      <span>Complete Task</span>
+                    </button>
+                  )}
+
                   {req.status === 'SUBMITTED' && (
                     <button
                       onClick={(e) => {
@@ -202,7 +223,7 @@ export const StaffView: React.FC<StaffViewProps> = ({ currentTab }) => {
                         e.stopPropagation();
                         updateRequestStatus(req.id, 'APPROVAL', 'Deliverable finalized, submitted for owner sign-off');
                       }}
-                      className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white text-xs font-bold uppercase tracking-wider transition shadow-md"
+                      className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition shadow-md"
                     >
                       Submit for Sign-off
                     </button>

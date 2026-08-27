@@ -222,6 +222,19 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
               {/* STAFF ACTIONS */}
               {currentRole === 'STAFF' && (
                 <>
+                  {currentRequest.status !== 'COMPLETED' && currentRequest.status !== 'REJECTED' && (
+                    <button
+                      id="staff-modal-complete-task-btn"
+                      onClick={() => handleStatusChange('COMPLETED')}
+                      disabled={isUpdating}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 shadow-md border border-white/20 hover:shadow-emerald-500/20"
+                      title="Complete task immediately ahead of schedule"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-white" />
+                      <span>Complete Task</span>
+                    </button>
+                  )}
+
                   {currentRequest.status === 'SUBMITTED' && (
                     <button
                       onClick={() => handleStatusChange('IN_REVIEW')}
@@ -248,20 +261,22 @@ export const RequestDetailsModal: React.FC<RequestDetailsModalProps> = ({ reques
                     <button
                       onClick={() => handleStatusChange('APPROVAL')}
                       disabled={isUpdating}
-                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 shadow-md"
+                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 shadow-md"
                     >
                       <ShieldCheck className="w-3.5 h-3.5" />
                       <span>Submit for Owner QA</span>
                     </button>
                   )}
 
-                  <button
-                    onClick={() => handleStatusChange('WAITING_FOR_CUSTOMER')}
-                    disabled={isUpdating}
-                    className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 light:bg-slate-200 light:text-slate-800 text-xs font-medium border border-white/[0.08] light:border-slate-300 transition"
-                  >
-                    Request Client Info
-                  </button>
+                  {currentRequest.status !== 'COMPLETED' && (
+                    <button
+                      onClick={() => handleStatusChange('WAITING_FOR_CUSTOMER')}
+                      disabled={isUpdating}
+                      className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 light:bg-slate-200 light:text-slate-800 text-xs font-medium border border-white/[0.08] light:border-slate-300 transition"
+                    >
+                      Request Client Info
+                    </button>
+                  )}
                 </>
               )}
 
